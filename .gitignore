@@ -1,31 +1,20 @@
-# Python
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-
-# Virtual env
-venv/
-.env/
-
-# Runtime files
-inputs/*
-static/*
-
-# Keep folders
-!inputs/.gitkeep
-!static/.gitkeep
-
-# Secrets
-*.json
 .env
-.env.local
-
-# OS / editor
-.DS_Store
-Thumbs.db
+.env.*
 .vscode/
 .idea/
 
-# Logs
-*.log
+inputs/*
+static/*
+!inputs/.gitkeep
+!static/.gitkeep
+
+# secret / credentials
+tomato-line-botV3.json
+service_account.json
+*.pem
+*.key
+
+# allow this model mapping file
+!models/class_mapping.json
