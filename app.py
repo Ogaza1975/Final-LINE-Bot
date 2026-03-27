@@ -5,10 +5,10 @@ import traceback
 from datetime import datetime
 
 import cv2
-import numpy as np
 import torch
 import timm
 import gspread
+import numpy as np
 
 from flask import Flask, request, send_from_directory
 from oauth2client.service_account import ServiceAccountCredentials
@@ -25,6 +25,12 @@ from linebot.models import (
 )
 
 # =========================================================
+# Reduce crash risk on small containers
+# =========================================================
+cv2.setNumThreads(0)
+torch.set_num_threads(1)
+
+# =========================================================
 # CONFIG FROM ENVIRONMENT VARIABLES
 # =========================================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
@@ -36,8 +42,8 @@ SERVICE_ACCOUNT_JSON_PATH = os.environ.get("SERVICE_ACCOUNT_JSON_PATH", "")
 
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 
-MODEL_PATH = os.environ.get("MODEL_PATH", "best_model.pth")
-CLASS_MAP_PATH = os.environ.get("CLASS_MAP_PATH", "class_mapping.json")
+MODEL_PATH = os.environ.get("MODEL_PATH", "models/best_model.pth")
+CLASS_MAP_PATH = os.environ.get("CLASS_MAP_PATH", "models/class_mapping.json")
 
 IMG_SIZE = int(os.environ.get("IMG_SIZE", 224))
 YOLO_CONF = float(os.environ.get("YOLO_CONF", 0.20))
@@ -46,6 +52,9 @@ GLOBAL_CONF = float(os.environ.get("GLOBAL_CONF", 0.70))
 
 INPUT_DIR = os.environ.get("INPUT_DIR", "inputs")
 STATIC_DIR = os.environ.get("STATIC_DIR", "static")
+
+MAX_IMAGE_SIDE = int(os.environ.get("MAX_IMAGE_SIDE", 960))
+MAX_BOXES = int(os.environ.get("MAX_BOXES", 3))
 
 # =========================================================
 # BASIC SETUP
@@ -68,6 +77,7 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 # GOOGLE SHEETS
 # =========================================================
 sheet = None
+
 
 def init_google_sheet():
     global sheet
@@ -99,6 +109,7 @@ def init_google_sheet():
         print("✅ Google Sheets connected successfully")
     except Exception as e:
         print(f"❌ Failed to initialize Google Sheets: {e}")
+        traceback.print_exc()
         sheet = None
 
 
@@ -117,6 +128,7 @@ def log_to_sheet(text: str):
         print(f"✅ log_to_sheet: {text} (row {last_row})")
     except Exception as e:
         print(f"❌ log_to_sheet error: {e}")
+        traceback.print_exc()
 
 
 # =========================================================
@@ -202,6 +214,10 @@ model = timm.create_model(
 if not os.path.exists(MODEL_PATH):
     raise FileNotFoundError(f"Model file not found: {MODEL_PATH}")
 
+print("MODEL_PATH =", MODEL_PATH)
+print("MODEL_EXISTS =", os.path.exists(MODEL_PATH))
+print("MODEL_SIZE_BYTES =", os.path.getsize(MODEL_PATH))
+
 checkpoint = torch.load(MODEL_PATH, map_location="cpu")
 
 if isinstance(checkpoint, dict):
@@ -248,6 +264,21 @@ transform = transforms.Compose([
 # =========================================================
 # HELPER FUNCTIONS
 # =========================================================
+def resize_if_needed(img, max_side=960):
+    h, w = img.shape[:2]
+    long_side = max(h, w)
+
+    if long_side <= max_side:
+        return img
+
+    scale = max_side / long_side
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+
+    resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    return resized
+
+
 def classify_leaf(img_bgr):
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     img_tensor = transform(img_rgb).unsqueeze(0).to(device)
@@ -257,7 +288,7 @@ def classify_leaf(img_bgr):
         probs = torch.softmax(outputs, dim=1)
         conf, pred = torch.max(probs, 1)
 
-    return pred.item(), conf.item(), probs.squeeze(0).cpu().numpy()
+    return pred.item(), conf.item()
 
 
 def draw_label(img, text, x1, y1, color):
@@ -329,21 +360,38 @@ def summarize_detections(detections):
 
 
 def detect_and_classify(image_path, conf_yolo=YOLO_CONF):
+    print("detect_and_classify: reading image")
     img_bgr = cv2.imread(image_path)
 
     if img_bgr is None:
         raise ValueError("ไม่สามารถอ่านไฟล์ภาพได้")
+
+    print("detect_and_classify: original shape =", img_bgr.shape)
+
+    img_bgr = resize_if_needed(img_bgr, max_side=MAX_IMAGE_SIDE)
+    print("detect_and_classify: resized shape =", img_bgr.shape)
 
     h, w = img_bgr.shape[:2]
     result_img = img_bgr.copy()
 
     raw_detections = []
 
-    results = yolo_model(image_path, conf=conf_yolo, verbose=False)
+    print("detect_and_classify: running yolo")
+    results = yolo_model(img_bgr, conf=conf_yolo, verbose=False)
+    print("detect_and_classify: yolo done")
+
     boxes = results[0].boxes
 
     if boxes is not None and len(boxes) > 0:
-        for box in boxes:
+        total_boxes = len(boxes)
+        print("detect_and_classify: boxes found =", total_boxes)
+
+        num_to_process = min(total_boxes, MAX_BOXES)
+        print("detect_and_classify: processing up to", num_to_process, "boxes")
+
+        for i, box in enumerate(boxes[:MAX_BOXES]):
+            print("processing box", i + 1)
+
             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
 
             pad = 10
@@ -354,15 +402,21 @@ def detect_and_classify(image_path, conf_yolo=YOLO_CONF):
 
             crop = img_bgr[y1p:y2p, x1p:x2p]
             if crop.size == 0:
+                print("skip empty crop")
                 continue
 
-            idx, conf, preds = classify_leaf(crop)
+            print("classifying crop", i + 1, "shape =", crop.shape)
+            idx, conf = classify_leaf(crop)
+            print("crop classified", i + 1, "conf =", conf)
+
             class_name = clean_class_name(class_names[idx])
 
             if is_not_leaf(class_name):
+                print("skip not_a_leaf")
                 continue
 
             if conf < MIN_CONF:
+                print("skip low conf:", conf)
                 continue
 
             raw_detections.append({
@@ -372,8 +426,10 @@ def detect_and_classify(image_path, conf_yolo=YOLO_CONF):
             })
 
     if len(raw_detections) == 0:
-        idx, conf, preds = classify_leaf(img_bgr)
+        print("fallback classify whole image")
+        idx, conf = classify_leaf(img_bgr)
         class_name = clean_class_name(class_names[idx])
+        print("fallback class =", class_name, "conf =", conf)
 
         if not is_not_leaf(class_name) and conf >= MIN_CONF:
             raw_detections.append({
@@ -383,8 +439,10 @@ def detect_and_classify(image_path, conf_yolo=YOLO_CONF):
             })
 
     max_conf = max([d["confidence"] for d in raw_detections], default=0.0)
+    print("max_conf =", max_conf)
 
     if max_conf < GLOBAL_CONF:
+        print("below GLOBAL_CONF, return empty result")
         return [], None
 
     final_detections = raw_detections
@@ -404,6 +462,8 @@ def detect_and_classify(image_path, conf_yolo=YOLO_CONF):
     result_filename = f"result_{uuid.uuid4().hex}.jpg"
     result_path = os.path.join(STATIC_DIR, result_filename)
     cv2.imwrite(result_path, result_img)
+
+    print("result image saved:", result_path)
 
     return final_detections, result_filename
 
@@ -426,6 +486,10 @@ def callback():
     signature = request.headers.get("X-Line-Signature", "")
     body = request.get_data(as_text=True)
 
+    # รองรับ verification request / body ว่าง
+    if not body.strip():
+        return "OK", 200
+
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
@@ -443,14 +507,27 @@ def serve_static(filename):
     return send_from_directory(STATIC_DIR, filename)
 
 
+@app.route("/favicon.ico")
+def favicon():
+    return "", 204
+
+
 # =========================================================
 # LINE HANDLER
 # =========================================================
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
+    input_path = None
+    result_path = None
+
     try:
+        print("=== handle_image: start ===")
+
         message_id = event.message.id
+        print("message_id =", message_id)
+
         content = line_bot_api.get_message_content(message_id)
+        print("got message content")
 
         input_filename = f"input_{message_id}.jpg"
         input_path = os.path.join(INPUT_DIR, input_filename)
@@ -459,17 +536,23 @@ def handle_image(event):
             for chunk in content.iter_content():
                 f.write(chunk)
 
+        print("saved input image:", input_path)
+
         detections, result_filename = detect_and_classify(input_path)
+        print("detect_and_classify finished")
 
         if not detections:
             reply_text = summarize_detections(detections)
+            print("no detections, replying text only")
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text=reply_text)
             )
+            print("reply sent")
             return
 
         log_multiple_diseases(detections)
+        print("logged to sheet")
 
         reply_text = summarize_detections(detections)
 
@@ -477,7 +560,9 @@ def handle_image(event):
             raise ValueError("PUBLIC_BASE_URL is not set")
 
         image_url = f"{PUBLIC_BASE_URL}/static/{result_filename}"
-        print("🌍 image_url =", image_url)
+        result_path = os.path.join(STATIC_DIR, result_filename)
+
+        print("image_url =", image_url)
 
         line_bot_api.reply_message(
             event.reply_token,
@@ -489,6 +574,7 @@ def handle_image(event):
                 )
             ]
         )
+        print("reply with image sent")
 
     except Exception as e:
         print("❌ handle_image error:", str(e))
@@ -502,6 +588,18 @@ def handle_image(event):
             )
         except Exception as inner_e:
             print("❌ reply error:", str(inner_e))
+
+    finally:
+        # ลบ input file
+        try:
+            if input_path and os.path.exists(input_path):
+                os.remove(input_path)
+                print("deleted input file:", input_path)
+        except Exception as e:
+            print("⚠️ failed to delete input file:", e)
+
+        # ยังไม่ลบ result file ทันที เพราะ LINE อาจยังต้องโหลดรูปจาก URL
+        # ถ้าจะลบภายหลัง ค่อยทำเป็น scheduled cleanup ภายหลัง
 
 
 # =========================================================
