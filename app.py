@@ -359,8 +359,8 @@ def summarize_detections(detections):
 
 #ฟังก์ชันวิเคราะห์ภาพ
 def detect_and_classify(image_path, conf_yolo=YOLO_CONF):
-    print("detect_and_classify: reading image")
     #อ่านภาพเข้ามา ใช้ OpenCV อ่านไฟล์ภาพจาก path ที่รับเข้ามา
+    print("detect_and_classify: reading image")
     img_bgr = cv2.imread(image_path)
 
     #เช็กว่ารูปถูกอ่านสำเร็จหรือไม่
@@ -382,7 +382,7 @@ def detect_and_classify(image_path, conf_yolo=YOLO_CONF):
 
     print("detect_and_classify: running yolo")
     
-    #ใช้ YOLO ตรวจหาบริเวณที่เป็นใบในภาพ
+    #ใช้ YOLO ตรวจหาบริเวณที่น่าสนใจ
     results = yolo_model(img_bgr, conf=conf_yolo, verbose=False)
     print("detect_and_classify: yolo done")
 
@@ -404,7 +404,7 @@ def detect_and_classify(image_path, conf_yolo=YOLO_CONF):
 
             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist()) #x1, y1 = มุมซ้ายบน x2, y2 = มุมขวาล่าง
 
-            #เพิ่มพื้นที่รอบกรอบอีก 10 pixel ทุกด้าน
+            #เพิ่มพื้นที่รอบกรอบอีก 10 pixel ทุกด้าน เพื่อช่วยให้มองเห็นลักษณะโรคได้ดีขึ้น
             pad = 10
             x1p = max(0, x1 - pad)
             y1p = max(0, y1 - pad)
