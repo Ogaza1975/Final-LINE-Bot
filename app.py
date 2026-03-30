@@ -54,7 +54,7 @@ INPUT_DIR = os.environ.get("INPUT_DIR", "inputs")
 STATIC_DIR = os.environ.get("STATIC_DIR", "static")
 
 MAX_IMAGE_SIDE = int(os.environ.get("MAX_IMAGE_SIDE", 960))
-MAX_BOXES = int(os.environ.get("MAX_BOXES", 3))
+MAX_BOXES = int(os.environ.get("MAX_BOXES", 4))
 
 # =========================================================
 # BASIC SETUP
