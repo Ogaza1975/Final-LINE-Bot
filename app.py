@@ -466,7 +466,7 @@ def detect_and_classify(image_path, conf_yolo=YOLO_CONF):
     final_detections = raw_detections
 
     #วาดกรอบและข้อความลงบนภาพ
-    for d in final_detections:
+    for i, d in enumerate(final_detections, start=1):
         x1, y1, x2, y2 = d["box"]
         class_name = d["class_name"]
         conf = d["confidence"]
@@ -478,7 +478,7 @@ def detect_and_classify(image_path, conf_yolo=YOLO_CONF):
         cv2.rectangle(result_img, (x1, y1), (x2, y2), color, 3)
 
         #สร้างข้อความ
-        label_text = f"{d}. {display_class_name(class_name)} {conf * 100:.1f}%"
+        label_text = f"{i}. {display_class_name(class_name)} {conf * 100:.1f}%"
         #วาดข้อความลงภาพ
         draw_label(result_img, label_text, x1, y1, color)
 
