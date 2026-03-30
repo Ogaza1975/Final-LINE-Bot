@@ -357,73 +357,92 @@ def summarize_detections(detections):
 
     return "\n".join(lines)
 
-
+#ฟังก์ชันวิเคราะห์ภาพ
 def detect_and_classify(image_path, conf_yolo=YOLO_CONF):
     print("detect_and_classify: reading image")
+    #อ่านภาพเข้ามา ใช้ OpenCV อ่านไฟล์ภาพจาก path ที่รับเข้ามา
     img_bgr = cv2.imread(image_path)
 
+    #เช็กว่ารูปถูกอ่านสำเร็จหรือไม่
     if img_bgr is None:
         raise ValueError("ไม่สามารถอ่านไฟล์ภาพได้")
 
+    #พิมพ์ขนาดภาพเดิมออกมาดู
     print("detect_and_classify: original shape =", img_bgr.shape)
 
+    #ย่อภาพถ้าขนาดใหญ่เกินไป
     img_bgr = resize_if_needed(img_bgr, max_side=MAX_IMAGE_SIDE)
     print("detect_and_classify: resized shape =", img_bgr.shape)
 
-    h, w = img_bgr.shape[:2]
-    result_img = img_bgr.copy()
+    #เตรียมตัวแปรสำหรับใช้งานต่อ
+    h, w = img_bgr.shape[:2] #เก็บความสูงและความกว้างของภาพไว้ใช้ภายหลัง
+    result_img = img_bgr.copy() #สร้างสำเนาของภาพไว้สำหรับวาดกรอบและข้อความเพื่อไม่แก้ไขภาพต้นฉบับโดยตรง
 
-    raw_detections = []
+    raw_detections = [] #สร้าง list ว่างไว้เก็บผล detection ที่ผ่านเงื่อนไขแล้ว
 
     print("detect_and_classify: running yolo")
+    
+    #ใช้ YOLO ตรวจหาบริเวณที่เป็นใบในภาพ
     results = yolo_model(img_bgr, conf=conf_yolo, verbose=False)
     print("detect_and_classify: yolo done")
 
     boxes = results[0].boxes
-
+    
+    #ถ้าYOLOเจออย่างน้อย 1 กรอบ จึงค่อยเข้าส่วนนี้
     if boxes is not None and len(boxes) > 0:
+        #นับจำนวนกล่องทั้งหมดที่ YOLO เจอ
         total_boxes = len(boxes)
         print("detect_and_classify: boxes found =", total_boxes)
 
+        #จำกัดจำนวนกล่องที่จะประมวลผลจริงไม่เกิน MAX_BOXES
         num_to_process = min(total_boxes, MAX_BOXES)
         print("detect_and_classify: processing up to", num_to_process, "boxes")
 
+        #วนทำงานทีละกรอบ
         for i, box in enumerate(boxes[:MAX_BOXES]):
             print("processing box", i + 1)
 
-            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist()) #x1, y1 = มุมซ้ายบน x2, y2 = มุมขวาล่าง
 
+            #เพิ่มพื้นที่รอบกรอบอีก 10 pixel ทุกด้าน
             pad = 10
             x1p = max(0, x1 - pad)
             y1p = max(0, y1 - pad)
             x2p = min(w, x2 + pad)
             y2p = min(h, y2 + pad)
 
+            #ครอปภาพเฉพาะส่วนที่ตรวจพบ
             crop = img_bgr[y1p:y2p, x1p:x2p]
             if crop.size == 0:
                 print("skip empty crop")
                 continue
 
+            #ส่งภาพที่ครอปไปให้โมเดลจำแนกโรค
             print("classifying crop", i + 1, "shape =", crop.shape)
-            idx, conf = classify_leaf(crop)
+            idx, conf = classify_leaf(crop) #idx = index ของ class ที่ทำนาย ,conf = ความมั่นใจของโมเดล
             print("crop classified", i + 1, "conf =", conf)
 
+            #แปลงเลข class เป็นชื่อโรค
             class_name = clean_class_name(class_names[idx])
 
+            #ถ้าผลออกมาว่าไม่ใช่ใบ
             if is_not_leaf(class_name):
                 print("skip not_a_leaf")
                 continue
 
+            #ค่าความมั่นใจต่ำเกินไป
             if conf < MIN_CONF:
                 print("skip low conf:", conf)
                 continue
 
+            #เก็บผลที่ผ่านเงื่อนไขแล้ว
             raw_detections.append({
                 "class_name": class_name,
                 "confidence": conf,
                 "box": (x1, y1, x2, y2)
             })
 
+    #ถ้า YOLO ไม่เจอส่วนที่เป็นใบเลย จะวิเคราะห์ทั้งภาพแทน
     if len(raw_detections) == 0:
         print("fallback classify whole image")
         idx, conf = classify_leaf(img_bgr)
@@ -446,24 +465,31 @@ def detect_and_classify(image_path, conf_yolo=YOLO_CONF):
 
     final_detections = raw_detections
 
+    #วาดกรอบและข้อความลงบนภาพ
     for d in final_detections:
         x1, y1, x2, y2 = d["box"]
         class_name = d["class_name"]
         conf = d["confidence"]
 
+        #เลือกสีกรอบ
         color = (0, 200, 0) if is_healthy(class_name) else (0, 0, 255)
 
+        #วาดกรอบ
         cv2.rectangle(result_img, (x1, y1), (x2, y2), color, 3)
 
+        #สร้างข้อความ
         label_text = f"{display_class_name(class_name)} {conf * 100:.1f}%"
+        #วาดข้อความลงภาพ
         draw_label(result_img, label_text, x1, y1, color)
 
+    #สร้างชื่อไฟล์ผลลัพธ์แบบสุ่ม
     result_filename = f"result_{uuid.uuid4().hex}.jpg"
     result_path = os.path.join(STATIC_DIR, result_filename)
     cv2.imwrite(result_path, result_img)
 
     print("result image saved:", result_path)
 
+    #คืนค่าผลลัพธ์กลับออกไป
     return final_detections, result_filename
 
 
